@@ -1,0 +1,48 @@
+---
+- name: Get services facts
+  service_facts:
+
+- name: Check if systemd-resolved is running
+  set_fact:
+    systemd_resolved_running: "{{ 'systemd-resolved.service' in ansible_facts.services and ansible_facts.services['systemd-resolved.service'].state == 'running' }}"
+
+- block:
+  - name: Get the output of resolvectl
+    command:
+      cmd: resolvectl
+    register: resolvectl_output
+    changed_when: false
+        
+  - name: Parse DNS servers from resolvectl output
+    set_fact:
+      dns_servers: "{{ (resolvectl_output.stdout | regex_search('DNS Servers:\\s+([^\\n]+)', '\\1') | first).split() }}"
+
+  - name: Create static /etc/resolv.conf
+    lineinfile:
+      path: /etc/resolv-static.conf
+      line: "nameserver {{ item }}"
+      create: yes
+      owner: root
+      group: root
+      mode: '0644'
+    loop: "{{dns_servers}}"
+
+  - name: Get state of /etc/resolv.conf
+    stat:
+      path: /etc/resolv.conf
+    register: resolv_conf
+
+  - name: Point resolv.conf to new file if is still a symlink
+    file:
+      src: /etc/resolv-static.conf
+      dest: /etc/resolv.conf
+      state: link
+      force: true
+    when: resolv_conf.stat.islnk is defined and resolv_conf.stat.islnk
+    
+  - name: Disable and shutdown resolved
+    service:
+      name: systemd-resolved
+      state: stopped
+      enabled: false
+  when: systemd_resolved_running
